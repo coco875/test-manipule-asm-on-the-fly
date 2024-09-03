@@ -10,10 +10,30 @@
 #include <capstone/capstone.h>
 #include <keystone/keystone.h>
 
-// separate assembly instructions by ; or \n
-#define CODE "CALL 0"
-
 void hook_add(void);
+
+char *register_64[] = {
+    "rdi",
+    "rsi",
+    "rdx",
+    "rcx",
+    "r8",
+    "r9"
+};
+
+char *register_32[] = {
+    "edi",
+    "esi",
+    "edx",
+    "ecx",
+    "r8d",
+    "r9d"
+};
+
+char **registre_name[] = {
+    register_32,
+    register_64
+};
 
 int add(int a, int b) {
     return a+b;
@@ -69,6 +89,48 @@ void convert_asm(ks_engine *ks, char *code, uint64_t address, unsigned char **en
     printf("Compiled: %lu bytes, statements: %lu\n", *size, *count);
 }
 
+int around_power_2(int a) {
+    int i;
+    for(i = 1; i<=a; i=i<<1) {}
+    return i;
+}
+
+void construct_hook_function(ks_engine *ks, char* code_buffer, char *type, int num_arg, void* hook, void* original_function, char* out_function_data){
+    unsigned char *encode;
+    size_t size;
+	size_t count;
+
+    int size_stack = 0;
+    for (int i = 0; i<num_arg; i++) {
+        size_stack += (type[i]+1)*4;
+    }
+    size_stack = around_power_2(size_stack);
+    printf("the size of the stack are %d\n", size_stack);
+
+    sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", size_stack);
+
+    size_stack = 0;
+    for (int i = 0; i<num_arg; i++) {
+        size_stack+=((type[i]+1)*4);
+        sprintf(code_buffer, "%s mov DWORD PTR [rbp-%d], %s;\n", code_buffer, size_stack, registre_name[type[i]][i]);
+    }
+    
+    sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, hook);
+
+    size_stack = 0;
+    for (int i = 0; i<num_arg; i++) {
+        size_stack+=((type[i]+1)*4);
+        sprintf(code_buffer, "%s mov %s, DWORD PTR [rbp-%d];\n", code_buffer, registre_name[type[i]][i], size_stack);
+    }
+
+    sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, original_function);
+    convert_asm(ks, code_buffer, (uint64_t) out_function_data, &encode, &size, &count);
+
+    unprotect_memory(out_function_data, size);
+    memcpy(out_function_data, encode, size);
+    ks_free(encode);
+}
+
 int main(void) {   
     // capstone
 	csh handle;
@@ -81,6 +143,8 @@ int main(void) {
     unsigned char *encode;
     size_t size;
 	size_t count;
+
+    char add_type[] = {0, 0};
 
 	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
 		return -1;
@@ -108,6 +172,7 @@ int main(void) {
 
     unprotect_memory(&add, size);
     memcpy(&add, encode, size);
+    ks_free(encode);
 
     void *original_function = malloc(size_function);
 
@@ -126,12 +191,9 @@ int main(void) {
 
     unprotect_memory(original_function, size);
     memcpy(original_function, encode, size);
-    
-    sprintf(code, "call 0x%lx; ret;", original_function);
-    convert_asm(ks, code, (uint64_t) lambda_function, &encode, &size, &count);
+    ks_free(encode);
 
-    unprotect_memory(lambda_function, size);
-    memcpy(lambda_function, encode, size);
+    construct_hook_function(ks, code, add_type, 2, hook_add, original_function, lambda_function);
 
     printf("add result %d\n", add(10,10));
     
@@ -140,7 +202,7 @@ int main(void) {
     cs_free(insn, count);
 
     // NOTE: free encode after usage to avoid leaking memory
-    ks_free(encode);
+    // ks_free(encode);
 
     // close Keystone instance when done
     ks_close(ks);
