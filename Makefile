@@ -3,8 +3,8 @@ LIBNAME = capstone
 KEYSTONE_LDFLAGS = -lkeystone -lstdc++ -lm
 
 test1: test1.o
-	${CC} $< -O3 -Wall -l$(LIBNAME) -o $@ $(KEYSTONE_LDFLAGS)
-	objdump -S --disassemble test1 > $@.s
+	${CC} $< -g -O3 -Wall -l$(LIBNAME) -o $@ $(KEYSTONE_LDFLAGS)
 
 %.o: %.c
+	${CC} -S $< -o $@.s
 	${CC} -c $< -o $@
