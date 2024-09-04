@@ -11,6 +11,9 @@
 #include <keystone/keystone.h>
 
 void hook_add(void);
+void inject(void) {
+
+}
 
 char *register_64[] = {
     "rdi",
@@ -39,8 +42,16 @@ int add(int a, int b) {
     return a+b;
 }
 
-void hook_add(void) {
-    printf("hello world\n");
+void hook1_add(void) {
+    printf("hello world 1\n");
+}
+
+void hook2_add(void) {
+    printf("hello world 2\n");
+}
+
+void register_hook(void) {
+    inject();
 }
 
 void unprotect_memory(void * addr, size_t size) {
@@ -70,7 +81,7 @@ void unprotect_memory(void * addr, size_t size) {
 
 void convert_asm(ks_engine *ks, char *code, uint64_t address, unsigned char **encode, size_t *size, size_t *count) {
     if (ks_asm(ks, code, address, encode, size, count) != KS_ERR_OK) {
-        printf("ERROR: ks_asm() failed & count = %lu, error = %u\n",
+        printf("ERROR: ks_asm() failed & count = %ln, error = %u\n",
 		         count, ks_errno(ks));
         // NOTE: free encode after usage to avoid leaking memory
         ks_free(*encode);
@@ -193,7 +204,7 @@ int main(void) {
     memcpy(original_function, encode, size);
     ks_free(encode);
 
-    construct_hook_function(ks, code, add_type, 2, hook_add, original_function, lambda_function);
+    construct_hook_function(ks, code, add_type, 2, hook1_add, original_function, lambda_function);
 
     printf("add result %d\n", add(10,10));
     
@@ -211,6 +222,6 @@ int main(void) {
 }
 
 int replace_hook(int a, int b) {
-    hook_add();
+    hook1_add();
     return add(a,b);
 }
