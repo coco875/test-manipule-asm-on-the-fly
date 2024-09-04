@@ -51,129 +51,6 @@ int around_power_2(int a) {
     return i;
 }
 
-typedef struct Hook_ {
-    void* func;
-    struct Hook_* next;
-} Hook;
-
-typedef struct FuncHook_ {
-    void* func;
-    char* type;
-    int num_arg;
-    int size_stack;
-    struct FuncHook_* next;
-    Hook* hook_list;
-} FuncHook;
-
-FuncHook* list_hook = NULL;
-
-void register_func_hook(csh *handle, void * func, char *type, int num_arg) {
-    FuncHook** it = &list_hook;
-    while (*it!=NULL) {
-        it = &((*it)->next);
-    }
-    *it = malloc(sizeof(FuncHook));
-    (*it)->func = func;
-    (*it)->type = malloc(sizeof(char)*num_arg);
-    memcpy((*it)->type, type, num_arg);
-    (*it)->num_arg = num_arg;
-    (*it)->size_stack = 0;
-    for (int i = 0; i<(*it)->num_arg; i++) {
-        (*it)->size_stack += ((*it)->type[i]+1)*4;
-    }
-    (*it)->size_stack = around_power_2((*it)->size_stack);
-    size_t count = cs_disasm(*handle, func, 30, (uint64_t) func, 0, &insn);
-	if (count <= 0) {
-		printf("ERROR: Failed to disassemble given code!\n");
-        cs_close(handle);
-        exit(-1);
-    }
-    size_t j;
-    for (j = 0; j < count; j++) {
-        printf("0x%"PRIx64":\tsize:%ld\t%s\t\t%s\n", insn[j].address, insn[j].size, insn[j].mnemonic,
-                insn[j].op_str);
-    }
-
-    char code[1024];
-    size_t size_function = 4096;
-    void *lambda_function = malloc(size_function);
-    sprintf(code, "jmp %ld", lambda_function);
-    convert_asm(ks, code, (uint64_t) add, &encode, &size, &count);
-
-    unprotect_memory(&add, size);
-    memcpy(&add, encode, size);
-    ks_free(encode);
-
-    void *original_function = malloc(size_function);
-
-    sprintf(code, "");
-
-    size_t size_junk = 0;
-    int i = 0;
-    while (size>size_junk) {
-        sprintf(code,"%s %s %s;", code, insn[i].mnemonic, insn[i].op_str);
-        size_junk += insn[i].size;
-        i++;
-    }
-
-    sprintf(code, "%s jmp 0x%lx;", code, insn[i].address);
-    convert_asm(ks, code, (uint64_t) original_function, &encode, &size, &count);
-
-    unprotect_memory(original_function, size);
-    memcpy(original_function, encode, size);
-    ks_free(encode);
-}
-
-void inject(void* hook, void* func) {
-    FuncHook** it = &list_hook;
-    while (*it!=NULL && (*it)->func==func) {
-        it = &((*it)->next);
-    }
-    if (*it == NULL) {
-        printf("Cannot hook an unregister function \n");
-        exit(-1);
-    }
-    Hook** hook_it = (*it)->hook_list;
-    while (*hook_it!=NULL) {
-        hook_it = &((*hook_it)->next);
-    }
-    *hook_it = malloc(sizeof(Hook));
-    (*hook_it)->func = func;
-}
-
-void register_hook(void) {
-    char add_type[] = {0, 0};
-    register_type_hook(add, add_type, 2);
-    inject(hook1_add, add);
-    inject(hook2_add, add);
-}
-
-void apply_hook(void) {
-    char code_buffer[4096];
-    FuncHook** it = &list_hook;
-    while (*it!=NULL) {
-        sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", (*it)->size_stack);
-        int size_stack = 0;
-        for (int i = 0; i<(*it)->num_arg; i++) {
-            size_stack+=(((*it)->type[i]+1)*4);
-            sprintf(code_buffer, "%s mov DWORD PTR [rbp-%d], %s;\n", code_buffer, size_stack, registre_name[(*it)->type[i]][i]);
-        }
-        
-        Hook** hook_it = (*it)->hook_list;
-        while (*hook_it!=NULL) {
-            sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (*hook_it)->func);
-            hook_it = &((*hook_it)->next);
-        }
-
-        size_stack = 0;
-        for (int i = 0; i<(*it)->num_arg; i++) {
-            size_stack+=(((*it)->type[i]+1)*4);
-            sprintf(code_buffer, "%s mov %s, DWORD PTR [rbp-%d];\n", code_buffer, registre_name[(*it)->type[i]][i], size_stack);
-        }
-        it = &((*it)->next);
-    }
-}
-
 void unprotect_memory(void * addr, size_t size) {
     int pagesize = sysconf(_SC_PAGE_SIZE);
     uint64_t ptr = ((uint64_t) addr) & (~(pagesize-1));
@@ -220,19 +97,163 @@ void convert_asm(ks_engine *ks, char *code, uint64_t address, unsigned char **en
     printf("Compiled: %lu bytes, statements: %lu\n", *size, *count);
 }
 
+typedef struct Hook_ {
+    void* func;
+    struct Hook_* next;
+} Hook;
+
+typedef struct FuncHook_ {
+    void* func;
+    char* type;
+    int num_arg;
+    int size_stack;
+    void* original_func;
+    void* hook_function;
+    struct FuncHook_* next;
+    Hook* hook_list;
+} FuncHook;
+
+FuncHook* list_hook = NULL;
+
+void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int num_arg) {
+    cs_insn *insn;
+    FuncHook** it = &list_hook;
+    unsigned char *encode;
+    size_t size;
+    while (*it!=NULL) {
+        it = &((*it)->next);
+    }
+    *it = malloc(sizeof(FuncHook));
+    (*it)->func = func;
+    (*it)->type = malloc(sizeof(char)*num_arg);
+    memcpy((*it)->type, type, num_arg);
+    (*it)->num_arg = num_arg;
+    (*it)->size_stack = 0;
+    (*it)->next = NULL;
+    (*it)->hook_list = NULL;
+
+    for (int i = 0; i<(*it)->num_arg; i++) {
+        (*it)->size_stack += ((*it)->type[i]+1)*4;
+    }
+    (*it)->size_stack = around_power_2((*it)->size_stack);
+
+    size_t count = cs_disasm(*handle, func, 30, (uint64_t) func, 0, &insn);
+	if (count <= 0) {
+		printf("ERROR: Failed to disassemble given code!\n");
+        cs_close(handle);
+        exit(-1);
+    }
+    size_t j;
+    for (j = 0; j < count; j++) {
+        printf("0x%"PRIx64":\tsize:%hu\t%s\t\t%s\n", insn[j].address, insn[j].size, insn[j].mnemonic,
+                insn[j].op_str);
+    }
+
+    char code[1024];
+    size_t size_function = 4096;
+    (*it)->hook_function = malloc(size_function);
+    sprintf(code, "jmp 0x%lx", (uintptr_t) (*it)->hook_function);
+    convert_asm(ks, code, (uintptr_t) func, &encode, &size, &count);
+
+    unprotect_memory(func, size);
+    memcpy(func, encode, size);
+    ks_free(encode);
+
+
+    sprintf(code, "");
+
+    size_t size_junk = 0;
+    int i = 0;
+    while (size>size_junk) {
+        sprintf(code,"%s %s %s;", code, insn[i].mnemonic, insn[i].op_str);
+        size_junk += insn[i].size;
+        i++;
+    }
+
+    uintptr_t ptr = (uintptr_t) malloc(size_function);
+    printf("original_func addr %lx\n", (*it)->hook_function);
+    (*it)->original_func = (void *)ptr;
+    
+    sprintf(code, "%s jmp 0x%lx;", code, insn[i].address);
+    convert_asm(ks, code, (uint64_t) (*it)->original_func, &encode, &size, &count);
+
+    unprotect_memory((*it)->original_func, size);
+    memcpy((*it)->original_func, encode, size);
+
+    ks_free(encode);
+    cs_free(insn, count);
+}
+
+void inject(void* hook, void* func) {
+    FuncHook** it = &list_hook;
+    while (*it!=NULL && (*it)->func!=func) {
+        printf("comparing %lx and %lx\n", (uintptr_t) func, (uintptr_t) (*it)->func);
+        it = &((*it)->next);
+    }
+    if (*it == NULL) {
+        printf("Cannot hook an unregister function \n");
+        exit(-1);
+    }
+    Hook** hook_it = &((*it)->hook_list);
+    while (*hook_it!=NULL) {
+        hook_it = &((*hook_it)->next);
+    }
+    *hook_it = malloc(sizeof(Hook));
+    (*hook_it)->func = func;
+    (*hook_it)->next = NULL;
+}
+
+void register_hook(csh *handle, ks_engine *ks) {
+    char add_type[] = {0, 0};
+    register_func_hook(handle, ks, add, add_type, 2);
+    inject(hook1_add, add);
+    inject(hook2_add, add);
+}
+
+void apply_hook(ks_engine *ks) {
+    char code_buffer[4096];
+    unsigned char *encode;
+    FuncHook** it = &list_hook;
+    size_t size;
+    size_t count;
+    while (*it!=NULL) {
+        sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", (*it)->size_stack);
+        int size_stack = 0;
+        for (int i = 0; i<(*it)->num_arg; i++) {
+            size_stack+=(((*it)->type[i]+1)*4);
+            sprintf(code_buffer, "%s mov DWORD PTR \[rbp-%d\], %s;\n", code_buffer, size_stack, registre_name[(int) (*it)->type[i]][i]);
+        }
+        
+        Hook** hook_it = &((*it)->hook_list);
+        while (*hook_it!=NULL) {
+            sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) (*hook_it)->func);
+            hook_it = &((*hook_it)->next);
+        }
+
+        size_stack = 0;
+        for (int i = 0; i<(*it)->num_arg; i++) {
+            size_stack+=(((*it)->type[i]+1)*4);
+            sprintf(code_buffer, "%s mov %s, DWORD PTR \[rbp-%d\];\n", code_buffer, registre_name[(int) (*it)->type[i]][i], size_stack);
+        }
+
+        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) (*it)->original_func, (*it)->size_stack);
+        convert_asm(ks, code_buffer, (uint64_t) (*it)->hook_function, &encode, &size, &count);
+
+        unprotect_memory((*it)->hook_function, size);
+        memcpy((*it)->hook_function, encode, size);
+        ks_free(encode);
+        it = &((*it)->next);
+    }
+    printf("finish apply hook\n");
+}
+
 
 int main(void) {   
     // capstone
 	csh handle;
-	cs_insn *insn;
 
     // keystone
     ks_engine *ks;
-
-    // data
-    unsigned char *encode;
-    size_t size;
-	size_t count;
 
 	if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
 		return -1;
@@ -240,13 +261,12 @@ int main(void) {
     if (ks_open(KS_ARCH_X86, KS_MODE_64, &ks) != KS_ERR_OK)
         return -1;
 
-    register_hook();
+    register_hook(&handle, ks);
+    apply_hook(ks);
 
     printf("add result %d\n", add(10,10));
     
     cs_close(&handle);
-
-    cs_free(insn, count);
 
     // NOTE: free encode after usage to avoid leaking memory
     // ks_free(encode);
@@ -259,5 +279,6 @@ int main(void) {
 
 int replace_hook(int a, int b) {
     hook1_add();
+    hook2_add();
     return add(a,b);
 }
