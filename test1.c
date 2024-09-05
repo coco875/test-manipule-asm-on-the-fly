@@ -10,7 +10,7 @@
 #include <capstone/capstone.h>
 #include <keystone/keystone.h>
 
-#include "vec.c"
+#include "vec.h"
 
 char *register_64[] = {
     "rdi",
@@ -129,7 +129,7 @@ typedef struct {
 typedef struct {
     int lenght;
     int max_lenght;
-    void **list;
+    FuncHook **list;
 } Vec_FuncHook;
 
 Vec_FuncHook list_hook = {0, 0, NULL};
@@ -138,13 +138,13 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
     cs_insn *insn;
     size_t size;
     FuncHook* it = malloc(sizeof(FuncHook));
-    append_vec(&list_hook, it);
+    append_vec((Vec*)&list_hook, it);
     it->func = func;
     it->type = malloc(sizeof(char)*num_arg);
     memcpy(it->type, type, num_arg);
     it->num_arg = num_arg;
     it->size_stack = 0;
-    it->hook_list = create_vec();
+    it->hook_list = (Vec_Hook*) create_vec();
 
     for (int i = 0; i<it->num_arg; i++) {
         it->size_stack += (it->type[i]+1)*4;
@@ -189,19 +189,21 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
     cs_free(insn, count);
 }
 
+bool compare(void* func, void* func_hook) {
+    FuncHook* element = (FuncHook*) func_hook;
+    return element->func==func;
+}
+
 void inject(void* hook, void* func) {
-    FuncHook* it = find_vec(&list_hook, )
-    if (*it == NULL) {
+    FuncHook* it = find_vec((Vec*)&list_hook, func, compare);
+    if (it == NULL) {
         printf("Cannot hook an unregister function \n");
         exit(-1);
     }
-    Hook** hook_it = &((*it)->hook_list);
-    while (*hook_it!=NULL) {
-        hook_it = &((*hook_it)->next);
-    }
-    *hook_it = malloc(sizeof(Hook));
-    (*hook_it)->func = hook;
-    (*hook_it)->next = NULL;
+    
+    Hook* hook_it = malloc(sizeof(Hook));
+    append_vec((Vec*)it->hook_list, hook_it);
+    hook_it->func = hook;
 }
 
 void register_hook(csh *handle, ks_engine *ks) {
@@ -213,33 +215,32 @@ void register_hook(csh *handle, ks_engine *ks) {
 
 void apply_hook(ks_engine *ks) {
     char code_buffer[4096];
-    FuncHook** it = &list_hook;
     size_t size;
     size_t count;
-    while (*it!=NULL) {
-        sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", (*it)->size_stack);
+    for (int i=0; i<list_hook.lenght; i++) {
+        print_vec((Vec*)&list_hook);
+        FuncHook* it = get_vec((Vec*)&list_hook,i);
+        sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", it->size_stack);
         int size_stack = 0;
-        for (int i = 0; i<(*it)->num_arg; i++) {
-            size_stack+=(((*it)->type[i]+1)*4);
-            sprintf(code_buffer, "%s mov DWORD PTR \[rbp-%d\], %s;\n", code_buffer, size_stack, registre_name[(int) (*it)->type[i]][i]);
+        for (int i = 0; i<it->num_arg; i++) {
+            size_stack+=((it->type[i]+1)*4);
+            sprintf(code_buffer, "%s mov DWORD PTR \[rbp-%d\], %s;\n", code_buffer, size_stack, registre_name[(int) it->type[i]][i]);
         }
         
-        Hook** hook_it = &((*it)->hook_list);
-        while (*hook_it!=NULL) {
-            sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) (*hook_it)->func);
-            hook_it = &((*hook_it)->next);
+        Vec_Hook* hook_list = it->hook_list;
+        for (int j=0; j<hook_list->lenght; j++) {
+            Hook* hook_it = get_vec((Vec*)hook_list,j);
+            sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) hook_it->func);
         }
 
         size_stack = 0;
-        for (int i = 0; i<(*it)->num_arg; i++) {
-            size_stack+=(((*it)->type[i]+1)*4);
-            sprintf(code_buffer, "%s mov %s, DWORD PTR \[rbp-%d\];\n", code_buffer, registre_name[(int) (*it)->type[i]][i], size_stack);
+        for (int i = 0; i<it->num_arg; i++) {
+            size_stack+=((it->type[i]+1)*4);
+            sprintf(code_buffer, "%s mov %s, DWORD PTR \[rbp-%d\];\n", code_buffer, registre_name[(int) it->type[i]][i], size_stack);
         }
 
-        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) (*it)->original_func);
-        insert_asm(ks, code_buffer, (void *) (*it)->hook_function, &size, &count);
-
-        it = &((*it)->next);
+        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) it->original_func);
+        insert_asm(ks, code_buffer, (void *) it->hook_function, &size, &count);
     }
     printf("finish apply hook\n");
 }

@@ -1,15 +1,11 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
+#include <stdio.h>
 
-typedef struct {
-    int lenght;
-    int max_lenght;
-    void **list;
-} Vec;
+#include "vec.h"
 
-Vec *create_vec() {
+Vec* create_vec() {
     Vec* vec = malloc(sizeof(Vec));
     vec->lenght = 0;
     vec->max_lenght = 0;
@@ -27,17 +23,17 @@ void extend_vec(Vec* vec) {
     vec->list = new_list;
 }
 
-void set_vec(Vec* vec, void *element, int index) {
-    assert(vec->lenght > index && index >0);
+void set_vec(Vec* vec, void* element, int index) {
+    assert(vec->lenght > index && index >= 0);
     vec->list[index] = element;
 }
 
 void* get_vec(Vec* vec, int index) {
-    assert(vec->lenght > index && index >0);
+    assert(vec->lenght > index && index >= 0);
     return vec->list[index];
 }
 
-void append_vec(Vec* vec, void *element) {
+void append_vec(Vec* vec, void* element) {
     if (vec->max_lenght == vec->lenght) {
         extend_vec(vec);
     }
@@ -66,4 +62,14 @@ void* find_vec(Vec* vec, void* element, bool (*func) (void*, void*)) {
         }
     }
     return NULL;
+}
+
+void iter_vec(Vec* vec, void (*func) (void*)) {
+    for (int i=0; i<vec->lenght; i++) {
+        func(vec->list[i]);
+    }
+}
+
+void print_vec(Vec* vec) {
+    printf("lenght: %d max lenght: %d\n", vec->lenght, vec->max_lenght);
 }
