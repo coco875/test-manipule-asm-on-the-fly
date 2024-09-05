@@ -53,9 +53,10 @@ int around_power_2(int a) {
 
 void unprotect_memory(void * addr, size_t size) {
     int pagesize = sysconf(_SC_PAGE_SIZE);
-    uint64_t ptr = ((uint64_t) addr) & (~(pagesize-1));
-    size += ((uint64_t) addr)-ptr;
+    uintptr_t ptr = ((uintptr_t) addr) & (~(pagesize-1));
+    size += ((uintptr_t) addr)-ptr;
     int n = size/pagesize;
+    
     if (mprotect((void *) ptr, (n+1)*pagesize, PROT_WRITE|PROT_READ|PROT_EXEC) != 0) {
         printf("error %d %lx\n", errno, ptr);
         switch (errno) {
@@ -76,8 +77,9 @@ void unprotect_memory(void * addr, size_t size) {
     }
 }
 
-void convert_asm(ks_engine *ks, char *code, uint64_t address, unsigned char **encode, size_t *size, size_t *count) {
-    if (ks_asm(ks, code, address, encode, size, count) != KS_ERR_OK) {
+void insert_asm(ks_engine *ks, char *code, void* address, size_t *size, size_t *count) {
+    unsigned char *encode;
+    if (ks_asm(ks, code, (uintptr_t) address, &encode, size, count) != KS_ERR_OK) {
         printf("ERROR: ks_asm() failed & count = %ln, error = %u\n",
 		         count, ks_errno(ks));
         // NOTE: free encode after usage to avoid leaking memory
@@ -91,10 +93,14 @@ void convert_asm(ks_engine *ks, char *code, uint64_t address, unsigned char **en
 
     printf("%s = ", code);
     for (i = 0; i < *size; i++) {
-        printf("%02x ", (*encode)[i]);
+        printf("%02x ", encode[i]);
     }
     printf("\n");
     printf("Compiled: %lu bytes, statements: %lu\n", *size, *count);
+    
+    unprotect_memory(address, *size);
+    memcpy(address, encode, *size);
+    ks_free(encode);
 }
 
 typedef struct Hook_ {
@@ -118,7 +124,6 @@ FuncHook* list_hook = NULL;
 void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int num_arg) {
     cs_insn *insn;
     FuncHook** it = &list_hook;
-    unsigned char *encode;
     size_t size;
     while (*it!=NULL) {
         it = &((*it)->next);
@@ -153,12 +158,7 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
     size_t size_function = 4096;
     (*it)->hook_function = malloc(size_function);
     sprintf(code, "jmp 0x%lx", (uintptr_t) (*it)->hook_function);
-    convert_asm(ks, code, (uintptr_t) func, &encode, &size, &count);
-
-    unprotect_memory(func, size);
-    memcpy(func, encode, size);
-    ks_free(encode);
-
+    insert_asm(ks, code, (uintptr_t) func, &size, &count);
 
     sprintf(code, "");
 
@@ -175,12 +175,8 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
     (*it)->original_func = (void *)ptr;
     
     sprintf(code, "%s jmp 0x%lx;", code, insn[i].address);
-    convert_asm(ks, code, (uint64_t) (*it)->original_func, &encode, &size, &count);
+    insert_asm(ks, code, (uint64_t) (*it)->original_func, &size, &count);
 
-    unprotect_memory((*it)->original_func, size);
-    memcpy((*it)->original_func, encode, size);
-
-    ks_free(encode);
     cs_free(insn, count);
 }
 
@@ -199,7 +195,7 @@ void inject(void* hook, void* func) {
         hook_it = &((*hook_it)->next);
     }
     *hook_it = malloc(sizeof(Hook));
-    (*hook_it)->func = func;
+    (*hook_it)->func = hook;
     (*hook_it)->next = NULL;
 }
 
@@ -212,7 +208,6 @@ void register_hook(csh *handle, ks_engine *ks) {
 
 void apply_hook(ks_engine *ks) {
     char code_buffer[4096];
-    unsigned char *encode;
     FuncHook** it = &list_hook;
     size_t size;
     size_t count;
@@ -237,11 +232,8 @@ void apply_hook(ks_engine *ks) {
         }
 
         sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) (*it)->original_func, (*it)->size_stack);
-        convert_asm(ks, code_buffer, (uint64_t) (*it)->hook_function, &encode, &size, &count);
+        insert_asm(ks, code_buffer, (uint64_t) (*it)->hook_function, &size, &count);
 
-        unprotect_memory((*it)->hook_function, size);
-        memcpy((*it)->hook_function, encode, size);
-        ks_free(encode);
         it = &((*it)->next);
     }
     printf("finish apply hook\n");
