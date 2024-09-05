@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 typedef struct {
     int lenght;
@@ -8,7 +9,7 @@ typedef struct {
     void **list;
 } Vec;
 
-Vec *create() {
+Vec *create_vec() {
     Vec* vec = malloc(sizeof(Vec));
     vec->lenght = 0;
     vec->max_lenght = 0;
@@ -56,4 +57,13 @@ void* pop_vec(Vec* vec) {
     vec->list[vec->lenght-1] = NULL;
     vec->lenght--;
     return element;
+}
+
+void* find_vec(Vec* vec, void* element, bool (*func) (void*, void*)) {
+    for (int i=0; i<vec->lenght; i++) {
+        if (func(element, vec->list[i])) {
+            return vec->list[i];
+        }
+    }
+    return NULL;
 }

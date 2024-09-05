@@ -10,6 +10,8 @@
 #include <capstone/capstone.h>
 #include <keystone/keystone.h>
 
+#include "vec.c"
+
 char *register_64[] = {
     "rdi",
     "rsi",
@@ -83,7 +85,7 @@ void insert_asm(ks_engine *ks, char *code, void* address, size_t *size, size_t *
         printf("ERROR: ks_asm() failed & count = %ln, error = %u\n",
 		         count, ks_errno(ks));
         // NOTE: free encode after usage to avoid leaking memory
-        ks_free(*encode);
+        ks_free(encode);
 
         // close Keystone instance when done
         ks_close(ks);
@@ -103,44 +105,51 @@ void insert_asm(ks_engine *ks, char *code, void* address, size_t *size, size_t *
     ks_free(encode);
 }
 
-typedef struct Hook_ {
+typedef struct {
     void* func;
-    struct Hook_* next;
 } Hook;
 
-typedef struct FuncHook_ {
+typedef struct {
+    int lenght;
+    int max_lenght;
+    Hook **list;
+} Vec_Hook;
+
+typedef struct {
     void* func;
     char* type;
     int num_arg;
     int size_stack;
     void* original_func;
     void* hook_function;
-    struct FuncHook_* next;
-    Hook* hook_list;
+    Vec_Hook* hook_list;
 } FuncHook;
 
-FuncHook* list_hook = NULL;
+
+typedef struct {
+    int lenght;
+    int max_lenght;
+    void **list;
+} Vec_FuncHook;
+
+Vec_FuncHook list_hook = {0, 0, NULL};
 
 void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int num_arg) {
     cs_insn *insn;
-    FuncHook** it = &list_hook;
     size_t size;
-    while (*it!=NULL) {
-        it = &((*it)->next);
-    }
-    *it = malloc(sizeof(FuncHook));
-    (*it)->func = func;
-    (*it)->type = malloc(sizeof(char)*num_arg);
-    memcpy((*it)->type, type, num_arg);
-    (*it)->num_arg = num_arg;
-    (*it)->size_stack = 0;
-    (*it)->next = NULL;
-    (*it)->hook_list = NULL;
+    FuncHook* it = malloc(sizeof(FuncHook));
+    append_vec(&list_hook, it);
+    it->func = func;
+    it->type = malloc(sizeof(char)*num_arg);
+    memcpy(it->type, type, num_arg);
+    it->num_arg = num_arg;
+    it->size_stack = 0;
+    it->hook_list = create_vec();
 
-    for (int i = 0; i<(*it)->num_arg; i++) {
-        (*it)->size_stack += ((*it)->type[i]+1)*4;
+    for (int i = 0; i<it->num_arg; i++) {
+        it->size_stack += (it->type[i]+1)*4;
     }
-    (*it)->size_stack = around_power_2((*it)->size_stack);
+    it->size_stack = around_power_2(it->size_stack);
 
     size_t count = cs_disasm(*handle, func, 30, (uint64_t) func, 0, &insn);
 	if (count <= 0) {
@@ -156,9 +165,9 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
 
     char code[1024];
     size_t size_function = 4096;
-    (*it)->hook_function = malloc(size_function);
-    sprintf(code, "jmp 0x%lx", (uintptr_t) (*it)->hook_function);
-    insert_asm(ks, code, (uintptr_t) func, &size, &count);
+    it->hook_function = malloc(size_function);
+    sprintf(code, "jmp 0x%lx", (uintptr_t) it->hook_function);
+    insert_asm(ks, code, (void*) func, &size, &count);
 
     sprintf(code, "");
 
@@ -171,21 +180,17 @@ void register_func_hook(csh *handle, ks_engine *ks, void * func, char *type, int
     }
 
     uintptr_t ptr = (uintptr_t) malloc(size_function);
-    printf("original_func addr %lx\n", (*it)->hook_function);
-    (*it)->original_func = (void *)ptr;
+    printf("original_func addr %lx\n", (uintptr_t) it->hook_function);
+    it->original_func = (void *)ptr;
     
     sprintf(code, "%s jmp 0x%lx;", code, insn[i].address);
-    insert_asm(ks, code, (uint64_t) (*it)->original_func, &size, &count);
+    insert_asm(ks, code, (void*) it->original_func, &size, &count);
 
     cs_free(insn, count);
 }
 
 void inject(void* hook, void* func) {
-    FuncHook** it = &list_hook;
-    while (*it!=NULL && (*it)->func!=func) {
-        printf("comparing %lx and %lx\n", (uintptr_t) func, (uintptr_t) (*it)->func);
-        it = &((*it)->next);
-    }
+    FuncHook* it = find_vec(&list_hook, )
     if (*it == NULL) {
         printf("Cannot hook an unregister function \n");
         exit(-1);
@@ -231,8 +236,8 @@ void apply_hook(ks_engine *ks) {
             sprintf(code_buffer, "%s mov %s, DWORD PTR \[rbp-%d\];\n", code_buffer, registre_name[(int) (*it)->type[i]][i], size_stack);
         }
 
-        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) (*it)->original_func, (*it)->size_stack);
-        insert_asm(ks, code_buffer, (uint64_t) (*it)->hook_function, &size, &count);
+        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) (*it)->original_func);
+        insert_asm(ks, code_buffer, (void *) (*it)->hook_function, &size, &count);
 
         it = &((*it)->next);
     }
