@@ -3,7 +3,7 @@
 typedef struct {
     int lenght;
     int max_lenght;
-    void **list;
+    void** list;
 } Vec;
 
 Vec* create_vec();
@@ -13,6 +13,6 @@ void* get_vec(Vec*, int);
 void append_vec(Vec*, void*);
 void* remove_vec(Vec*, int);
 void* pop_vec(Vec*);
-void* find_vec(Vec*, void*, bool (*func) (void*, void*));
-void iter_vec(Vec*, void (*func) (void*));
+void* find_vec(Vec*, void*, bool (*func)(void*, void*));
+void iter_vec(Vec*, void (*func)(void*));
 void print_vec(Vec*);

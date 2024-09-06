@@ -9,5 +9,6 @@
         "utility": "c",
         "keystone.h": "c"
     },
-    "makefile.configureOnOpen": true
+    "makefile.configureOnOpen": true,
+    "editor.formatOnSave": true
 }
