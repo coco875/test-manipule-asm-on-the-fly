@@ -3,8 +3,8 @@ LIBNAME = capstone
 KEYSTONE_LDFLAGS = -lkeystone -lstdc++ -lm
 CC = clang
 
-test1: test1.o
-	${CC} $< -gdwarf -O3 -Wall -l$(LIBNAME) -o $@ $(KEYSTONE_LDFLAGS)
+test1: test1.o vec.o
+	${CC} $^ -gdwarf -O3 -Wall -l$(LIBNAME) -o $@ $(KEYSTONE_LDFLAGS)
 
 %.o: %.c
 	${CC} -S -masm=intel $< -o $@.s

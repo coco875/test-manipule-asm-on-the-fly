@@ -6,7 +6,10 @@
         "functional": "c",
         "tuple": "c",
         "type_traits": "c",
-        "utility": "c"
+        "utility": "c",
+        "keystone.h": "c",
+        "initializer_list": "c"
     },
-    "makefile.configureOnOpen": true
+    "makefile.configureOnOpen": true,
+    "editor.formatOnSave": true
 }
