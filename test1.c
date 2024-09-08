@@ -16,6 +16,8 @@ char* register_64[] = { "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
 
 char* register_32[] = { "edi", "esi", "edx", "ecx", "r8d", "r9d" };
 
+char* return_register[] = { "eax", "rax" };
+
 char** registre_name[] = { register_32, register_64 };
 
 int add(int a, int b) {
@@ -96,11 +98,17 @@ void insert_asm(ks_engine* ks, char* code, void* address, size_t* size) {
     ks_free(encode);
 }
 
-enum TypeRegister { _32_BITS = 0, _64_BITS };
+enum TypeRegister { NO_REG = 0, _32_BITS, _64_BITS };
+enum PositionHook { HEAD, RETURN };
+
+typedef struct {
+    enum PositionHook position;
+} HookTarget;
 
 typedef struct {
     void* func;
     int num_arg;
+    HookTarget target;
 } Hook;
 
 typedef struct {
@@ -111,8 +119,9 @@ typedef struct {
 
 typedef struct {
     void* func;
-    char* type;
+    enum TypeRegister* type;
     int num_arg;
+    enum TypeRegister return_type;
     int size_stack;
     void* original_func;
     void* hook_function;
@@ -127,22 +136,27 @@ typedef struct {
 
 Vec_FuncHook list_hook = { 0, 0, NULL };
 
-void register_func_hook(csh* handle, ks_engine* ks, void* func, char* type, int num_arg) {
+void register_func_hook(csh* handle, ks_engine* ks, void* func, enum TypeRegister* type, int num_arg,
+                        enum TypeRegister return_type) {
     cs_insn* insn;
     size_t size;
     FuncHook* it = malloc(sizeof(FuncHook));
     append_vec((Vec*) &list_hook, it);
     it->func = func;
     it->type = malloc(sizeof(char) * num_arg);
-    memcpy(it->type, type, num_arg);
+    memcpy(it->type, type, num_arg * sizeof(enum TypeRegister));
     it->num_arg = num_arg;
+    it->return_type = return_type;
     it->size_stack = 0;
     it->hook_list = (Vec_Hook*) create_vec();
 
     for (int i = 0; i < it->num_arg; i++) {
-        it->size_stack += (it->type[i] + 1) * 4;
+        it->size_stack += it->type[i] * 4;
+        printf("size_stack:%d\n", it->size_stack);
     }
-    it->size_stack = around_power_2(it->size_stack);
+
+    it->size_stack += return_type * 4;
+    printf("size_stack:%d\n", it->size_stack);
 
     size_t count = cs_disasm(*handle, func, 1024, (uint64_t) func, 0, &insn);
 
@@ -160,7 +174,6 @@ void register_func_hook(csh* handle, ks_engine* ks, void* func, char* type, int 
 
     sprintf(code, "");
 
-    size_t code_size = 1024;
     size_t size_junk = 0;
 
     int i;
@@ -197,17 +210,17 @@ void inject(Hook hook, void* func) {
 }
 
 void register_hook(csh* handle, ks_engine* ks) {
-    char add_type[] = { 0, 0 };
-    register_func_hook(handle, ks, add, add_type, 2);
-    inject((Hook){ .func = hook1_add, .num_arg = 1 }, add);
+    enum TypeRegister add_type[] = { _32_BITS, _32_BITS };
+    register_func_hook(handle, ks, add, add_type, 2, _32_BITS);
+    inject((Hook){ .func = hook1_add, .num_arg = 1, .target = { .position = RETURN } }, add);
     inject((Hook){ .func = hook2_add, .num_arg = 2 }, add);
 }
 
-void write_asm_arg_load(char* code, char* type, int num_arg) {
+void write_asm_arg_load(char* code, enum TypeRegister* type, int num_arg) {
     size_t size_stack = 0;
     for (int i = 0; i < num_arg; i++) {
-        size_stack += ((type[i] + 1) * 4);
-        sprintf(code, "%s mov %s, DWORD PTR \[rbp-%zu\];\n", code, registre_name[(int) type[i]][i], size_stack);
+        size_stack += type[i] * 4;
+        sprintf(code, "%s mov %s, DWORD PTR [rbp-%zu];\n", code, registre_name[(int) type[i] - 1][i], size_stack);
     }
 }
 
@@ -217,24 +230,48 @@ void apply_hook(ks_engine* ks) {
     for (int i = 0; i < list_hook.lenght; i++) {
         print_vec((Vec*) &list_hook);
         FuncHook* it = get_vec((Vec*) &list_hook, i);
-        sprintf(code_buffer, "push rbp; mov	rbp, rsp; sub rsp, %d;\n", it->size_stack);
+        sprintf(code_buffer, "push rbp; mov rbp, rsp; sub rsp, %d;\n", around_power_2(it->size_stack));
         int size_stack = 0;
-        for (int i = 0; i < it->num_arg; i++) {
-            size_stack += ((it->type[i] + 1) * 4);
-            sprintf(code_buffer, "%s mov DWORD PTR \[rbp-%d\], %s;\n", code_buffer, size_stack,
-                    registre_name[(int) it->type[i]][i]);
+        for (int j = 0; j < it->num_arg; j++) {
+            size_stack += it->type[j] * 4;
+            sprintf(code_buffer, "%s mov DWORD PTR [rbp-%d], %s;\n", code_buffer, size_stack,
+                    registre_name[(int) it->type[j] - 1][j]);
         }
 
         Vec_Hook* hook_list = it->hook_list;
         for (int j = 0; j < hook_list->lenght; j++) {
             Hook* hook_it = get_vec((Vec*) hook_list, j);
+            if (hook_it->target.position != HEAD) {
+                continue;
+            }
             write_asm_arg_load(code_buffer, it->type, hook_it->num_arg);
             sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) hook_it->func);
         }
 
         write_asm_arg_load(code_buffer, it->type, it->num_arg);
+        sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) it->original_func);
 
-        sprintf(code_buffer, "%s call 0x%lx; leave; ret;\n", code_buffer, (uintptr_t) it->original_func);
+        if (it->return_type != NO_REG) {
+            sprintf(code_buffer, "%s mov DWORD PTR [rbp - %d], %s;\n", code_buffer, size_stack,
+                    return_register[it->return_type - 1]);
+        }
+
+        hook_list = it->hook_list;
+        for (int j = 0; j < hook_list->lenght; j++) {
+            Hook* hook_it = get_vec((Vec*) hook_list, j);
+            if (hook_it->target.position != RETURN) {
+                continue;
+            }
+            write_asm_arg_load(code_buffer, it->type, hook_it->num_arg);
+            sprintf(code_buffer, "%s call 0x%lx;\n", code_buffer, (uintptr_t) hook_it->func);
+        }
+
+        if (it->return_type != NO_REG) {
+            sprintf(code_buffer, "%s mov %s, DWORD PTR [rbp - %d];\n", code_buffer,
+                    return_register[it->return_type - 1], size_stack);
+        }
+
+        sprintf(code_buffer, "%s leave; ret;\n", code_buffer);
         insert_asm(ks, code_buffer, (void*) it->hook_function, &size);
     }
     printf("finish apply hook\n");
@@ -270,7 +307,8 @@ int main(void) {
 }
 
 int replace_hook(int a, int b) {
-    hook1_add(a);
     hook2_add(a, b);
-    return add(a, b);
+    int c = add(a, b);
+    hook1_add(a);
+    return c;
 }
