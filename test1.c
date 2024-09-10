@@ -28,7 +28,7 @@ void hook1_add(int a) {
     printf("hello world 1, a:%d\n", a);
 }
 
-void hook2_add(int a, int b) {
+void hook2_add(int a, int b, bool* cancel) {
     printf("hello world 2, a:%d b:%d\n", a, b);
 }
 
@@ -109,6 +109,7 @@ typedef struct {
     void* func;
     int num_arg;
     HookTarget target;
+    bool cancellable;
 } Hook;
 
 typedef struct {
@@ -123,6 +124,7 @@ typedef struct {
     int num_arg;
     enum TypeRegister return_type;
     int size_stack;
+    bool can_be_cancel;
     void* original_func;
     void* hook_function;
     Vec_Hook* hook_list;
@@ -203,6 +205,10 @@ void inject(Hook hook, void* func) {
         printf("Cannot hook an unregister function \n");
         exit(-1);
     }
+    if (hook.cancellable && !it->can_be_cancel) {
+        it->can_be_cancel = true;
+        it->size_stack += 1;
+    }
 
     Hook* hook_it = malloc(sizeof(Hook));
     append_vec((Vec*) it->hook_list, hook_it);
@@ -213,14 +219,14 @@ void register_hook(csh* handle, ks_engine* ks) {
     enum TypeRegister add_type[] = { _32_BITS, _32_BITS };
     register_func_hook(handle, ks, add, add_type, 2, _32_BITS);
     inject((Hook){ .func = hook1_add, .num_arg = 1, .target = { .position = RETURN } }, add);
-    inject((Hook){ .func = hook2_add, .num_arg = 2 }, add);
+    inject((Hook){ .func = hook2_add, .num_arg = 3, .cancellable = true }, add);
 }
 
 void write_asm_arg_load(char* code, enum TypeRegister* type, int num_arg) {
     size_t size_stack = 0;
     for (int i = 0; i < num_arg; i++) {
         size_stack += type[i] * 4;
-        sprintf(code, "%s mov %s, DWORD PTR [rbp-%zu];\n", code, registre_name[(int) type[i] - 1][i], size_stack);
+        sprintf(code, "%s mov %s, DWORD PTR [rbp - %zu];\n", code, registre_name[(int) type[i] - 1][i], size_stack);
     }
 }
 
@@ -234,9 +240,11 @@ void apply_hook(ks_engine* ks) {
         int size_stack = 0;
         for (int j = 0; j < it->num_arg; j++) {
             size_stack += it->type[j] * 4;
-            sprintf(code_buffer, "%s mov DWORD PTR [rbp-%d], %s;\n", code_buffer, size_stack,
+            sprintf(code_buffer, "%s mov DWORD PTR [rbp - %d], %s;\n", code_buffer, size_stack,
                     registre_name[(int) it->type[j] - 1][j]);
         }
+
+        size_stack += it->return_type * 4;
 
         Vec_Hook* hook_list = it->hook_list;
         for (int j = 0; j < hook_list->lenght; j++) {
@@ -307,7 +315,10 @@ int main(void) {
 }
 
 int replace_hook(int a, int b) {
-    hook2_add(a, b);
+    bool cancel = false;
+    hook2_add(a, b, &cancel);
+    if (cancel)
+        return 0;
     int c = add(a, b);
     hook1_add(a);
     return c;
